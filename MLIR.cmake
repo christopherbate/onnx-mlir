@@ -1,62 +1,84 @@
 # SPDX-License-Identifier: Apache-2.0
 
-# Must unset LLVM_DIR in cache. Otherwise, when MLIR_DIR changes LLVM_DIR
-# won't change accordingly.
-unset(LLVM_DIR CACHE)
-if (NOT DEFINED MLIR_DIR)
-  message(FATAL_ERROR "MLIR_DIR is not configured but it is required. "
-    "Set the cmake option MLIR_DIR, e.g.,\n"
-    "    cmake -DMLIR_DIR=/path/to/llvm-project/build/lib/cmake/mlir ..\n"
-    )
-endif()
-
-find_package(MLIR REQUIRED CONFIG)
-
-message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
-message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
-
-list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
-list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
-
-include(TableGen)
-include(AddLLVM)
-include(AddMLIR)
-
-include(HandleLLVMOptions)
-
-include_directories(${LLVM_INCLUDE_DIRS})
-include_directories(${MLIR_INCLUDE_DIRS})
-
-add_definitions(${LLVM_DEFINITIONS})
-
-set(BUILD_SHARED_LIBS ${LLVM_ENABLE_SHARED_LIBS} CACHE BOOL "" FORCE)
-message(STATUS "BUILD_SHARED_LIBS        : " ${BUILD_SHARED_LIBS})
-
-# onnx uses exceptions, so we need to make sure that LLVM_REQUIRES_EH is set to ON, so that
-# the functions from HandleLLVMOptions and AddLLVM don't disable exceptions.
-set(LLVM_REQUIRES_EH ON)
-message(STATUS "LLVM_REQUIRES_EH         : " ${LLVM_REQUIRES_EH})
-
-# LLVM_HOST_TRIPLE is exported as part of the llvm config, so we should be able to leverage it.
-# If, for some reason, it is not set, default to an empty string which is the old default behavior of onnx-mlir.
-set(ONNX_MLIR_DEFAULT_TRIPLE "${LLVM_HOST_TRIPLE}" CACHE STRING "Default triple for onnx-mlir.")
-message(STATUS "ONNX_MLIR_DEFAULT_TRIPLE : " ${ONNX_MLIR_DEFAULT_TRIPLE})
-
-# If CMAKE_INSTALL_PREFIX was not provided explicitly and we are not using an install of
-# LLVM and a CMakeCache.txt exists,
-# force CMAKE_INSTALL_PREFIX to be the same as the LLVM build.
-if (CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT AND NOT LLVM_INSTALL_PREFIX)
-  if (EXISTS ${LLVM_BINARY_DIR}/CMakeCache.txt)
-    file(STRINGS ${LLVM_BINARY_DIR}/CMakeCache.txt prefix REGEX CMAKE_INSTALL_PREFIX)
-    string(REGEX REPLACE "CMAKE_INSTALL_PREFIX:PATH=" "" prefix ${prefix})
-    string(REGEX REPLACE "//.*" "" prefix ${prefix})
-    set(CMAKE_INSTALL_PREFIX ${prefix} CACHE PATH "" FORCE)
+# Locates an installed LLVM/MLIR.
+macro(find_installed_mlir)
+  # Must unset LLVM_DIR in cache. Otherwise, when MLIR_DIR changes LLVM_DIR
+  # won't change accordingly.
+  unset(LLVM_DIR CACHE)
+  if (NOT DEFINED MLIR_DIR)
+    message(FATAL_ERROR "MLIR_DIR is not configured but it is required. "
+      "Set the cmake option MLIR_DIR, e.g.,\n"
+      "    cmake -DMLIR_DIR=/path/to/llvm-project/build/lib/cmake/mlir ..\n"
+      )
   endif()
-endif()
-message(STATUS "CMAKE_INSTALL_PREFIX     : " ${CMAKE_INSTALL_PREFIX})
+
+  find_package(MLIR REQUIRED CONFIG)
+
+  message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
+  message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
+
+  list(APPEND CMAKE_MODULE_PATH "${MLIR_CMAKE_DIR}")
+  list(APPEND CMAKE_MODULE_PATH "${LLVM_CMAKE_DIR}")
+
+  include(TableGen)
+  include(AddLLVM)
+  include(AddMLIR)
+
+  include(HandleLLVMOptions)
+
+  include_directories(${LLVM_INCLUDE_DIRS})
+  include_directories(${MLIR_INCLUDE_DIRS})
+
+  add_definitions(${LLVM_DEFINITIONS})
+
+  set(BUILD_SHARED_LIBS ${LLVM_ENABLE_SHARED_LIBS} CACHE BOOL "" FORCE)
+  message(STATUS "BUILD_SHARED_LIBS        : " ${BUILD_SHARED_LIBS})
+
+  # onnx uses exceptions, so we need to make sure that LLVM_REQUIRES_EH is set to ON, so that
+  # the functions from HandleLLVMOptions and AddLLVM don't disable exceptions.
+  set(LLVM_REQUIRES_EH ON)
+  message(STATUS "LLVM_REQUIRES_EH         : " ${LLVM_REQUIRES_EH})
+
+  # LLVM_HOST_TRIPLE is exported as part of the llvm config, so we should be able to leverage it.
+  # If, for some reason, it is not set, default to an empty string which is the old default behavior of onnx-mlir.
+  set(ONNX_MLIR_DEFAULT_TRIPLE "${LLVM_HOST_TRIPLE}" CACHE STRING "Default triple for onnx-mlir.")
+  message(STATUS "ONNX_MLIR_DEFAULT_TRIPLE : " ${ONNX_MLIR_DEFAULT_TRIPLE})
+
+  # If CMAKE_INSTALL_PREFIX was not provided explicitly and we are not using an install of
+  # LLVM and a CMakeCache.txt exists,
+  # force CMAKE_INSTALL_PREFIX to be the same as the LLVM build.
+  if (CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT AND NOT LLVM_INSTALL_PREFIX)
+    if (EXISTS ${LLVM_BINARY_DIR}/CMakeCache.txt)
+      file(STRINGS ${LLVM_BINARY_DIR}/CMakeCache.txt prefix REGEX CMAKE_INSTALL_PREFIX)
+      string(REGEX REPLACE "CMAKE_INSTALL_PREFIX:PATH=" "" prefix ${prefix})
+      string(REGEX REPLACE "//.*" "" prefix ${prefix})
+      set(CMAKE_INSTALL_PREFIX ${prefix} CACHE PATH "" FORCE)
+    endif()
+  endif()
+  message(STATUS "CMAKE_INSTALL_PREFIX     : " ${CMAKE_INSTALL_PREFIX})
+endmacro()
+
+# Sets MLIR variables and project-wide includes for building as an
+# LLVM external project.
+macro(setup_mlir_external_project_variables)
+  set(MLIR_MAIN_SRC_DIR ${LLVM_MAIN_SRC_DIR}/../mlir ) # --src-root
+  set(MLIR_INCLUDE_DIR ${MLIR_MAIN_SRC_DIR}/include ) # --includedir
+  set(MLIR_GENERATED_INCLUDE_DIR ${LLVM_BINARY_DIR}/tools/mlir/include)
+  list(APPEND CMAKE_MODULE_PATH "${MLIR_MAIN_SRC_DIR}/cmake/modules")
+  include(TableGen)
+  include(AddLLVM)
+  include(AddMLIR)
+  
+  include_directories(${MLIR_INCLUDE_DIR} ${MLIR_GENERATED_INCLUDE_DIR})
+  include_directories(${ONNX_MLIR_SRC_ROOT} ${ONNX_MLIR_BIN_ROOT})
+  add_definitions(${LLVM_DEFINITIONS})
+endmacro()
+
 
 # The tablegen functions below are modeled based on the corresponding functions
 # in mlir: https://github.com/llvm/llvm-project/blob/main/mlir/cmake/modules/AddMLIR.cmake
+
+# Generate markdown documentation from a dialect Tablegen file.
 function(add_onnx_mlir_dialect_doc dialect dialect_tablegen_file)
   # Generate Dialect Documentation
   set(LLVM_TARGET_DEFINITIONS ${dialect_tablegen_file})
@@ -145,18 +167,21 @@ endfunction()
 #   )
 function(add_onnx_mlir_library name)
   cmake_parse_arguments(ARG
-    "EXCLUDE_FROM_OM_LIBS;NO_INSTALL"
+    "EXCLUDE_FROM_OM_LIBS;NO_INSTALL;NO_LLVM_FLAGS"
     ""
     "DEPENDS;INCLUDE_DIRS;ACCEL_INCLUDE_DIRS;LINK_LIBS;LINK_COMPONENTS"
     ${ARGN}
-    )
+  )
 
   if (NOT ARG_EXCLUDE_FROM_OM_LIBS)
     set_property(GLOBAL APPEND PROPERTY ONNX_MLIR_LIBS ${name})
   endif()
 
   add_library(${name} ${ARG_UNPARSED_ARGUMENTS})
-  llvm_update_compile_flags(${name})
+
+  if(NOT ARG_NO_LLVM_FLAGS)
+    llvm_update_compile_flags(${name})
+  endif()
 
   if (ARG_DEPENDS)
     add_dependencies(${name} ${ARG_DEPENDS})

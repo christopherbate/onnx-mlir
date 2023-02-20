@@ -3,7 +3,33 @@
 # Match the minimum required version of LLVM and MLIR
 cmake_minimum_required(VERSION 3.13.4)
 
+# The project can be built in one of two ways:
+# 1. As a standalone project, using an external LLVM/MLIR install specified by
+#    the "MLIR_DIR" variable and discovered using `find_package`.
+# 2. As a "LLVM External Project", i.e. part of a greater llvm-project build.
+# TODO: Add support for standlone build without setting up LLVM (i.e. if this
+# project is a submodule for another project that itself is building LLVM from
+# source).
+
+# If this directory is not the primary source directory, then we are not the 
+# main build.
+if(NOT (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR))
+  message(WARNING "Building ONNX-MLIR as an LLVM External Project."
+                  "This build mode is community supported and no gauruntees are made"
+                  "regarding its functionality.")
+  set(ONNX_MLIR_EXTERNAL_PROJECT_BUILD ON)
+  set(ONNX_MLIR_STANDALONE_BUILD OFF)
+else()
+  message(STATUS "Building ONNX-MLIR in standalone mode.")
+  set(ONNX_MLIR_EXTERNAL_PROJECT_BUILD OFF)
+  set(ONNX_MLIR_STANDALONE_BUILD ON)  
+endif()
+
 project(onnx-mlir)
+
+# ===----------------------------------------------------------------------===//
+# Build Options
+# ===----------------------------------------------------------------------===//
 
 option(ONNX_MLIR_BUILD_TESTS "Build ONNX-MLIR test executables. If OFF, just generate build targets." ON)
 option(ONNX_MLIR_CCACHE_BUILD "Set to ON for a ccache enabled build." OFF)
@@ -11,28 +37,29 @@ option(ONNX_MLIR_ENABLE_MHLO "Enable MHLO support." ON)
 option(ONNX_MLIR_ENABLE_WERROR "Enable warnings as errors." OFF)
 option(ONNX_MLIR_SUPPRESS_THIRD_PARTY_WARNINGS "Suppress warning in third_party code." ON)
 
-set(CMAKE_CXX_STANDARD 17)
-
-set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
-# On systems that still have legacy lib64 directories (e.g., rhel/fedora,
-# etc.), by default some components (e.g., cmake) install into lib while
-# others (e.g., python) install into lib64.
-# This causes trouble when we try to figure out the runtime directory in
-# CompilerUtils.cpp::getLibraryPath(). So we explicitly set CMAKE_INSTALL_LIBDIR
-# to install into lib on all systems so we don't have to deal with lib64.
-set(CMAKE_INSTALL_LIBDIR lib)
-
-if (NOT CMAKE_BUILD_TYPE)
-  message(STATUS "No build type selected, default to Debug")
-  set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type (default Debug)" FORCE)
-endif()
+# ===----------------------------------------------------------------------===//
+# CMake Policies
+# ===----------------------------------------------------------------------===//
 
 # CMP0116: Ninja generators transform `DEPFILE`s from `add_custom_command()`
 # New in CMake 3.20. https://cmake.org/cmake/help/latest/policy/CMP0116.html
 # Use the same setting as llvm-project
 if (POLICY CMP0116)
   cmake_policy(SET CMP0116 OLD)
+endif()
+
+
+# ===----------------------------------------------------------------------===//
+# Global Build Settings
+# ===----------------------------------------------------------------------===//
+
+set(CMAKE_CXX_STANDARD 17)
+
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+if (NOT CMAKE_BUILD_TYPE)
+  message(STATUS "No build type selected, default to Debug")
+  set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type (default Debug)" FORCE)
 endif()
 
 # Enable ccache
@@ -54,13 +81,29 @@ if (ONNX_MLIR_CCACHE_BUILD)
 endif()
 
 # Enable warnings as errors
-# Leverage the imported LLVM_ENABLE_WERROR for compiler logic
-set(LLVM_ENABLE_WERROR ${ONNX_MLIR_ENABLE_WERROR})
+# Leverage the imported LLVM_ENABLE_WERROR for compiler logic.
+# Only modify this if we are a standalone build, otherwise respect the 
+# greater LLVM build setting.
+if(ONNX_MLIR_STANDALONE_BUILD)
+  set(LLVM_ENABLE_WERROR ${ONNX_MLIR_ENABLE_WERROR})
+endif()
 
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/$<CONFIG>/lib)
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/$<CONFIG>/lib)
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/$<CONFIG>/bin)
-set(CMAKE_INCLUDE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/$<CONFIG>/include)
+# Modify where build products are produced in the binary directory.
+# Only do this if we are a standalone build.
+if(ONNX_MLIR_STANDALONE_BUILD)
+  # On systems that still have legacy lib64 directories (e.g., rhel/fedora,
+  # etc.), by default some components (e.g., cmake) install into lib while
+  # others (e.g., python) install into lib64.
+  # This causes trouble when we try to figure out the runtime directory in
+  # CompilerUtils.cpp::getLibraryPath(). So we explicitly set CMAKE_INSTALL_LIBDIR
+  # to install into lib on all systems so we don't have to deal with lib64.
+  set(CMAKE_INSTALL_LIBDIR lib)
+
+  set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/$<CONFIG>/lib)
+  set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/$<CONFIG>/lib)
+  set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/$<CONFIG>/bin)
+  set(CMAKE_INCLUDE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/$<CONFIG>/include)
+endif()
 
 set(ONNX_MLIR_SRC_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 set(ONNX_MLIR_BIN_ROOT ${CMAKE_CURRENT_BINARY_DIR})
@@ -72,52 +115,76 @@ set(ONNX_MLIR_INCLUDE_PATH ${CMAKE_INCLUDE_OUTPUT_DIRECTORY})
 set(ONNX_MLIR_VENDOR ${PACKAGE_VENDOR} CACHE STRING
   "Vendor-specific text for showing with version information.")
 
-include(CTest)
-include(ExternalProject)
+# ===----------------------------------------------------------------------===//
+# Find/setup MLIR-related variables and associated project-wide settings
+# ===----------------------------------------------------------------------===//
 include(MLIR.cmake)
 
-# MLIR.cmake calls find_package(MLIR) which sets LLVM_MINIMUM_PYTHON_VERSION
-if (WIN32)
-  # On Windows, only search the environment for Python (instead of also checking the registry).
-  # This allows us to pick up the correct version of Python instead of always picking the latest
-  # installed on the machine.
-  set(Python3_FIND_REGISTRY NEVER)
+if(ONNX_MLIR_STANDALONE_BUILD)  
+  find_installed_mlir()
+elseif(ONNX_MLIR_EXTERNAL_PROJECT_BUILD)    
+  setup_mlir_external_project_variables()
 endif()
 
-find_package(Python3 ${LLVM_MINIMUM_PYTHON_VERSION} REQUIRED COMPONENTS Interpreter Development)
+# ===----------------------------------------------------------------------===//
+# Other Pre-built Dependencies
+# ===----------------------------------------------------------------------===//  
+include(CTest)
+include(ExternalProject)
 
-# On MacOS, find_package for Java and JNI doesn't work if JAVA_INCLUDE_PATH
-# and JAVA_INCLUDE_PATH2 are not set. Setting them requires JAVA_HOME to be
-# known. If the JAVA_HOME env var isn't set, we try to figure it out by running
-# java and looking for the java.home property.
-if (APPLE)
-  set(JAVA_HOME $ENV{JAVA_HOME})
-  if ("${JAVA_HOME}" STREQUAL "")
-    execute_process(
-      COMMAND bash -c "java -XshowSettings:properties -version 2>&1 | \
-                       sed -n 's/[ \t]*java.home = //p'"
-      OUTPUT_STRIP_TRAILING_WHITESPACE
-      OUTPUT_VARIABLE JAVA_HOME)
+function(find_python3_dependencies)
+  # MLIR.cmake calls find_package(MLIR) which sets LLVM_MINIMUM_PYTHON_VERSION
+  if (WIN32)
+    # On Windows, only search the environment for Python (instead of also checking the registry).
+    # This allows us to pick up the correct version of Python instead of always picking the latest
+    # installed on the machine.
+    set(Python3_FIND_REGISTRY NEVER)
   endif()
-  if (NOT "${JAVA_HOME}" STREQUAL "")
-    SET(JAVA_INCLUDE_PATH  "${JAVA_HOME}/include")
-    SET(JAVA_INCLUDE_PATH2 "${JAVA_HOME}/include/darwin")
+  find_package(Python3 ${LLVM_MINIMUM_PYTHON_VERSION} REQUIRED COMPONENTS Interpreter Development)
+endfunction()
+
+find_python3_dependencies()
+
+function(find_java_dependencies)
+  # On MacOS, find_package for Java and JNI doesn't work if JAVA_INCLUDE_PATH
+  # and JAVA_INCLUDE_PATH2 are not set. Setting them requires JAVA_HOME to be
+  # known. If the JAVA_HOME env var isn't set, we try to figure it out by running
+  # java and looking for the java.home property.
+  if (APPLE)
+    set(JAVA_HOME $ENV{JAVA_HOME})
+    if ("${JAVA_HOME}" STREQUAL "")
+      execute_process(
+        COMMAND bash -c "java -XshowSettings:properties -version 2>&1 | \
+                        sed -n 's/[ \t]*java.home = //p'"
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        OUTPUT_VARIABLE JAVA_HOME)
+    endif()
+    if (NOT "${JAVA_HOME}" STREQUAL "")
+      SET(JAVA_INCLUDE_PATH  "${JAVA_HOME}/include")
+      SET(JAVA_INCLUDE_PATH2 "${JAVA_HOME}/include/darwin")
+    endif()
   endif()
-endif()
 
-# Don't require AWT to allow headless JDK to reduce docker image size
-set(JAVA_AWT_INCLUDE_PATH headless)
-set(JAVA_AWT_LIBRARY headless)
-find_package(Java COMPONENTS Development)
-find_package(JNI)
+  # Don't require AWT to allow headless JDK to reduce docker image size
+  set(JAVA_AWT_INCLUDE_PATH headless)
+  set(JAVA_AWT_LIBRARY headless)
+  find_package(Java COMPONENTS Development)
+  find_package(JNI)
 
-if (Java_Development_FOUND AND JNI_FOUND)
-  set(ONNX_MLIR_ENABLE_JNI TRUE)
-  include(UseJava)
-else()
-  set(ONNX_MLIR_ENABLE_JNI FALSE)
-  message(WARNING "Java Development component or JNI not found, JNI targets will not work")
-endif()
+  if (Java_Development_FOUND AND JNI_FOUND)
+    set(ONNX_MLIR_ENABLE_JNI TRUE)
+    include(UseJava)
+  else()
+    set(ONNX_MLIR_ENABLE_JNI FALSE)
+    message(WARNING "Java Development component or JNI not found, JNI targets will not work")
+  endif()
+endfunction()
+
+find_java_dependencies()
+
+# ===----------------------------------------------------------------------===//
+# C/CXX Flags
+# ===----------------------------------------------------------------------===//  
 
 if (CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
   # Use the new MSVC preprocessor to improve standard conformance.
@@ -147,6 +214,10 @@ if (ONNX_MLIR_SUPPRESS_THIRD_PARTY_WARNINGS)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D_SILENCE_ALL_CXX17_DEPRECATION_WARNINGS")
   endif()
 endif()
+
+# ===----------------------------------------------------------------------===//
+# Setup Local Dependencies
+# ===----------------------------------------------------------------------===//  
 
 # Decrease the log level for the inclusion of third party code
 set(CMAKE_MESSAGE_LOG_LEVEL NOTICE)
@@ -204,6 +275,10 @@ endif()
 if (ONNX_MLIR_ENABLE_MHLO)
   add_compile_definitions(ONNX_MLIR_ENABLE_MHLO)
 endif()
+
+# ===----------------------------------------------------------------------===//
+# Project Targets
+# ===----------------------------------------------------------------------===//  
 
 add_subdirectory(utils)
 add_subdirectory(include)

@@ -115,6 +115,7 @@ add_onnx_mlir_library(OMONNXOps
   OMMlirDialects
   OMMlirUtilities
   OMONNXElementsAttr
+  OMShapeHelperOpInterface
   onnx
   MLIRFuncDialect
   )
